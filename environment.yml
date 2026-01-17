@@ -1,0 +1,42 @@
+name: foundation_stereo
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - matplotlib
+  - numpy
+  - pip:
+    # PyTorch compatible with CUDA 12.8
+    - torch==2.4.1
+
+    # Foundation Stereo official dependencies
+    - scikit-image
+    - omegaconf
+    - opencv-contrib-python
+    - imgaug
+    - ninja
+    - timm
+    - albumentations
+    - scipy
+    - joblib
+    - scikit-learn
+    - ruamel.yaml
+    - trimesh
+    - pyyaml
+    - imageio
+    - open3d
+    - transformations
+    - einops
+    - gdown
+    - nodejs
+    - xformers==0.0.28.post1
+    - huggingface-hub
+
+    # Tutorial-specific additions
+    - pillow
+    - rerun-sdk[notebook]
+    - projectaria-tools[all]==2.1.0
