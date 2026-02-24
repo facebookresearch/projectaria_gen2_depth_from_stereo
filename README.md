@@ -14,8 +14,10 @@ This tutorial demonstrates the full pipeline:
 ## Prerequisites
 
 - **CUDA-capable GPU** with 2-4GB VRAM
-- **Aria Gen2 VRS file** such as from the Project Aria Gen2 Pilot Dataset [TODO: link]
+- **Aria Gen2 VRS file** such as from the Project Aria Gen2 Pilot Dataset:
 
+VRS: https://www.projectaria.com/async/sample/download/?bucket=core&filename=aria_gen2_sample_data_1.vrs
+MPS: https://www.projectaria.com/async/sample/download/?bucket=core&filename=aria_gen2_sample_data_1_mps_output_dec_2025.zip
 ## Quick Start
 
 ### 1. Clone and Set Up
@@ -23,7 +25,7 @@ This tutorial demonstrates the full pipeline:
 ```bash
 # Clone with submodules
 git clone --recurse-submodules https://github.com/facebookresearch/projectaria_gen2_depth_from_stereo.git
-cd depth_from_stereo
+cd projectaria_gen2_depth_from_stereo
 
 # Or if already cloned without submodules:
 git submodule update --init
