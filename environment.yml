@@ -1,4 +1,4 @@
-name: foundation_stereo
+name: depth_from_stereo
 channels:
   - pytorch
   - nvidia
@@ -9,9 +9,11 @@ dependencies:
   - pip
   - matplotlib
   - numpy
+  - ipykernel
   - pip:
     # PyTorch compatible with CUDA 12.8
-    - torch==2.4.1
+    - --extra-index-url https://download.pytorch.org/whl/cu128
+    - torch==2.10.0+cu128
 
     # Foundation Stereo official dependencies
     - scikit-image
@@ -33,7 +35,7 @@ dependencies:
     - einops
     - gdown
     - nodejs
-    - xformers==0.0.28.post1
+    - xformers
     - huggingface-hub
 
     # Tutorial-specific additions

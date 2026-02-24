@@ -18,38 +18,59 @@ This tutorial demonstrates the full pipeline:
 
 ## Quick Start
 
-### 1. Create Conda Environment
+### 1. Clone and Set Up
 
 ```bash
-# Create environment with all dependencies
-conda env create -f environment.yml
+# Clone with submodules
+git clone --recurse-submodules https://github.com/facebookresearch/projectaria_gen2_depth_from_stereo.git
+cd depth_from_stereo
 
-# Activate the environment
-conda activate foundation_stereo
+# Or if already cloned without submodules:
+git submodule update --init
+
+# Create conda environment
+conda env create -f environment.yml
+conda activate depth_from_stereo
 ```
 
-This single command installs:
+This installs:
 - Python 3.11
-- PyTorch 2.4.1 with CUDA 12.8 support
+- PyTorch 2.10.0 with CUDA 12.8 support
 - Project Aria Tools 2.1.0 with all extras
 - Foundation Stereo dependencies (timm, einops, xformers, flash-attn, etc.)
 - Rerun SDK for 3D visualization
 
-**Note:** Installation may take 10-20 minutes depending on your internet connection.
-
-### 2. Download Foundation Stereo Model
-
-Download the pretrained model weights:
+### 2. Download Foundation Stereo Checkpoint
 
 ```bash
-# Create directory
-mkdir -p FoundationStereo/pretrained_models/23-51-11
-
-# Download model (you'll need to get this from Foundation Stereo repository)
-# See: https://github.com/NVlabs/FoundationStereo
+# Download checkpoint (~3.2 GB) into the submodule
+# See: https://github.com/NVlabs/FoundationStereo for download instructions
+# Place model_best_bp2-001.pth and cfg.yaml in FoundationStereo/ckpts/
 ```
 
-### 3. Run the Tutorial
+### 3. Run the Export Script
+
+To process an entire recording and export rectified images, depth maps, and camera metadata:
+
+```bash
+python export_depth_from_stereo.py \
+  --vrs ~/datasets/projectaria_gen2_pilot_dataset/walk_0/video.vrs \
+  --mps ~/datasets/projectaria_gen2_pilot_dataset/walk_0/mps \
+  --stereo_model ./FoundationStereo/ckpts/model_best_bp2-001.pth \
+  --output_dir ./output/walk_0
+```
+
+Optional flags:
+- `--max_frames N` — Limit to N output frames (0 = all)
+- `--stride N` — Process every Nth VRS frame (default 1)
+- `--no_images` — Skip writing PNG images, only produce `pinhole_camera_parameters.json`
+
+The output directory will contain:
+- `rectified_images/image_XXXXXXXX.png` — Rectified left camera images (uint8 grayscale)
+- `depth/depth_XXXXXXXX.png` — Depth maps as uint16 PNGs in millimeters
+- `pinhole_camera_parameters.json` — Per-frame camera intrinsics and world poses
+
+### 4. Run the Tutorial Notebook
 
 Open the Jupyter notebook using your preferred notebook viewer.
 
@@ -72,8 +93,11 @@ Update these paths in the notebook/script:
 # Path to your Aria Gen2 VRS file
 VRS_FILE_PATH = "path/to/your/aria_recording.vrs"
 
+# Optional MPS data directory (set to None to use factory calibration only)
+MPS_DIR = "/path/to/sequence/mps/"
+
 # Path to Foundation Stereo checkpoint (if different)
-FOUNDATION_STEREO_CKPT = "./FoundationStereo/pretrained_models/23-51-11/model_best_bp2.pth"
+FOUNDATION_STEREO_CKPT = "./FoundationStereo/ckpts/model_best_bp2-001.pth"
 
 # Frame index to process
 FRAME_INDEX = 100
