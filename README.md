@@ -20,7 +20,7 @@ VRS: https://www.projectaria.com/async/sample/download/?bucket=core&filename=ari
 MPS: https://www.projectaria.com/async/sample/download/?bucket=core&filename=aria_gen2_sample_data_1_mps_output_dec_2025.zip
 ## Quick Start
 
-### 1. Clone and Set Up
+### 1. Clone Repository
 
 ```bash
 # Clone with submodules
@@ -29,8 +29,21 @@ cd projectaria_gen2_depth_from_stereo
 
 # Or if already cloned without submodules:
 git submodule update --init
+```
 
-# Create conda environment
+### 2. Download Foundation Stereo Checkpoint
+
+Start this download first — the checkpoint is ~3.2 GB and can download while conda installs in the next step.
+
+```bash
+# Download checkpoint (~3.2 GB) into the submodule
+# See: https://github.com/NVlabs/FoundationStereo for download instructions
+# Place model_best_bp2-001.pth and cfg.yaml in FoundationStereo/ckpts/
+```
+
+### 3. Create Conda Environment
+
+```bash
 conda env create -f environment.yml
 conda activate depth_from_stereo
 ```
@@ -42,15 +55,9 @@ This installs:
 - Foundation Stereo dependencies (timm, einops, xformers, flash-attn, etc.)
 - Rerun SDK for 3D visualization
 
-### 2. Download Foundation Stereo Checkpoint
+### 4. Run the Export Script
 
-```bash
-# Download checkpoint (~3.2 GB) into the submodule
-# See: https://github.com/NVlabs/FoundationStereo for download instructions
-# Place model_best_bp2-001.pth and cfg.yaml in FoundationStereo/ckpts/
-```
-
-### 3. Run the Export Script
+**Note:** Make sure the `depth_from_stereo` conda environment is activated before running.
 
 To process an entire recording and export rectified images, depth maps, and camera metadata:
 
@@ -72,7 +79,7 @@ The output directory will contain:
 - `depth/depth_XXXXXXXX.png` — Depth maps as uint16 PNGs in millimeters
 - `pinhole_camera_parameters.json` — Per-frame camera intrinsics and world poses
 
-### 4. Run the Tutorial Notebook
+### 5. Run the Tutorial Notebook
 
 Open the Jupyter notebook using your preferred notebook viewer.
 
