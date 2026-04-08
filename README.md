@@ -1,13 +1,13 @@
 # Aria Gen2 Stereo Depth Estimation Tutorial
 
-Complete tutorial for computing metric depth maps from Aria Gen2 stereo cameras using stereo rectification and Foundation Stereo neural network.
+Complete tutorial for computing metric depth maps from Aria Gen2 stereo cameras using stereo rectification and a selectable stereo backend.
 
 ## Overview
 
 This tutorial demonstrates the full pipeline:
 1. Load stereo camera data from Aria Gen2 VRS files
 2. Perform stereo rectification on fisheye images
-3. Use Foundation Stereo for zero-shot disparity estimation
+3. Use Foundation Stereo or WAFT-Stereo for zero-shot disparity estimation
 4. Convert disparity to metric depth
 5. Visualize depth as 3D point clouds with Rerun
 
@@ -41,6 +41,32 @@ Start this download first — the checkpoint is ~3.2 GB and can download while c
 # Place model_best_bp2-001.pth and cfg.yaml in FoundationStereo/ckpts/
 ```
 
+### 2b. Optional: Set Up WAFT-Stereo
+
+WAFT-Stereo is supported as an optional backend and is included as a git submodule:
+
+```bash
+git submodule update --init WAFT-Stereo
+```
+
+Install the additional WAFT dependencies:
+
+```bash
+pip install peft yacs termcolor accelerate
+```
+
+Download the required checkpoints:
+
+- WAFT checkpoint:
+  - `WAFT-Stereo/ckpts/SynLarge/DAv2L-5.pth`
+- Depth-Anything-V2 checkpoint:
+  - `WAFT-Stereo/depth-anything-ckpts/depth_anything_v2_vitl.pth`
+
+See:
+- https://github.com/princeton-vl/WAFT-Stereo
+- https://huggingface.co/MemorySlices/WAFT-Stereo
+- https://huggingface.co/depth-anything/Depth-Anything-V2-Large
+
 ### 3. Create Conda Environment
 
 ```bash
@@ -59,25 +85,53 @@ This installs:
 
 **Note:** Make sure the `depth_from_stereo` conda environment is activated before running.
 
-To process an entire recording and export rectified images, depth maps, and camera metadata:
+To process an entire recording and export rectified images, depth maps, and camera metadata with the default Foundation Stereo backend:
 
 ```bash
 python export_depth_from_stereo.py \
   --vrs ~/datasets/projectaria_gen2_pilot_dataset/walk_0/video.vrs \
   --mps ~/datasets/projectaria_gen2_pilot_dataset/walk_0/mps \
   --stereo_model ./FoundationStereo/ckpts/model_best_bp2-001.pth \
+  --stereo_backend foundation \
   --output_dir ./output/walk_0
+```
+
+To use WAFT-Stereo instead:
+
+```bash
+python export_depth_from_stereo.py \
+  --vrs ~/datasets/projectaria_gen2_pilot_dataset/walk_0/video.vrs \
+  --mps ~/datasets/projectaria_gen2_pilot_dataset/walk_0/mps \
+  --stereo_model ./WAFT-Stereo/ckpts/SynLarge/DAv2L-5.pth \
+  --stereo_backend waft \
+  --waft_config ./WAFT-Stereo/configs/SynLarge/DAv2L-5.yaml \
+  --waft_tile_height 544 \
+  --waft_tile_width 960 \
+  --waft_factor_list 1.0 \
+  --output_dir ./output/walk_0_waft
 ```
 
 Optional flags:
 - `--max_frames N` — Limit to N output frames (0 = all)
 - `--stride N` — Process every Nth VRS frame (default 1)
 - `--no_images` — Skip writing PNG images, only produce `pinhole_camera_parameters.json`
+- `--stereo_backend {foundation,waft}` — Choose which stereo model family to use
+- `--backend {torch,tensorrt}` — Foundation Stereo runtime backend only
+- `--lr_check` — Run Foundation Stereo left-right consistency checking and write `masks/mask_XXXXXXXX.png`
+- `--zero_inconsistent_depth` — With `--lr_check`, zero inconsistent depth pixels before writing `depth/*.png`
+- `--waft_tile_height/--waft_tile_width` — WAFT tiled inference crop size
+- `--waft_factor_list` — WAFT inference scale factors, e.g. `0.5,1.0`
+
+Notes:
+- `--lr_check` is currently supported only for `--stereo_backend foundation`
+- `--zero_inconsistent_depth` requires `--lr_check`
+- `--backend tensorrt` applies only to Foundation Stereo
 
 The output directory will contain:
 - `rectified_images/image_XXXXXXXX.png` — Rectified left camera images (uint8 grayscale)
 - `depth/depth_XXXXXXXX.png` — Depth maps as uint16 PNGs in millimeters
-- `pinhole_camera_parameters.json` — Per-frame camera intrinsics and world poses
+- `masks/mask_XXXXXXXX.png` — Optional LR-consistency masks (255 = consistent, 0 = inconsistent)
+- `pinhole_camera_parameters.json` — Per-frame camera intrinsics, `T_world_camera`, and `T_device_rectCam`
 
 ### 5. Run the Tutorial Notebook
 
@@ -90,7 +144,7 @@ The tutorial covers:
 1. **Environment Setup** - Import libraries and verify GPU
 2. **VRS Data Loading** - Load stereo cameras and calibration
 3. **Stereo Rectification** - Transform fisheye to pinhole with horizontal epipolar lines
-4. **Foundation Stereo Inference** - Compute disparity map
+4. **Stereo Inference** - Compute disparity map with Foundation Stereo or WAFT-Stereo
 5. **Depth Conversion** - Convert disparity to metric depth
 6. **3D Visualization** - Interactive point cloud with Rerun
 
@@ -130,6 +184,7 @@ NOTE: The results of this tutorial are not guaranteed to exactly match depth map
 
 - [Project Aria Tools Documentation](https://facebookresearch.github.io/projectaria_tools/) - Aria API reference
 - [Foundation Stereo GitHub](https://github.com/NVlabs/FoundationStereo) - Model repository
+- [WAFT-Stereo GitHub](https://github.com/princeton-vl/WAFT-Stereo) - Optional stereo backend
 - [Rerun Documentation](https://www.rerun.io/docs) - 3D visualization guide
 
 ## Citation
@@ -160,6 +215,7 @@ as well as the Project Aria Gen2 paper:
 
 This tutorial follows the licensing of the underlying tools:
 - Foundation Stereo: See [Foundation Stereo LICENSE](https://github.com/NVlabs/FoundationStereo/blob/master/LICENSE)
+- WAFT-Stereo: See [WAFT-Stereo LICENSE](https://github.com/princeton-vl/WAFT-Stereo/blob/main/LICENSE)
 - Project Aria Tools: See [Project Aria Tools LICENSE](https://github.com/facebookresearch/projectaria_tools/blob/main/LICENSE)
 
 ## Support
@@ -167,6 +223,7 @@ This tutorial follows the licensing of the underlying tools:
 For issues related to:
 - **Tutorial**: Open an issue in this repository
 - **Foundation Stereo**: See [Foundation Stereo Issues](https://github.com/NVlabs/FoundationStereo/issues)
+- **WAFT-Stereo**: See [WAFT-Stereo Issues](https://github.com/princeton-vl/WAFT-Stereo/issues)
 - **Project Aria Tools**: See [Project Aria Tools Issues](https://github.com/facebookresearch/projectaria_tools/issues)
 
 
