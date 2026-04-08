@@ -84,6 +84,17 @@ def parse_args():
     parser.add_argument(
         "--no_images", action="store_true", help="Skip writing PNG images"
     )
+    parser.add_argument(
+        "--lr_check",
+        action="store_true",
+        help="Enable left-right disparity consistency check",
+    )
+    parser.add_argument(
+        "--lr_threshold",
+        type=float,
+        default=1.0,
+        help="LR consistency threshold in pixels (default 1.0)",
+    )
     return parser.parse_args()
 
 
@@ -130,6 +141,30 @@ def run_foundation_stereo(model, left_rect, right_rect, cfg):
     return disp
 
 
+def run_lr_consistency(model, left_rect, right_rect, cfg, threshold=1.0):
+    """Run LR consistency check: two passes of Foundation Stereo.
+
+    Returns (disparity_map, consistent_mask) where consistent_mask is bool [H, W].
+    """
+    disp_lr = run_foundation_stereo(model, left_rect, right_rect, cfg)
+
+    right_flipped = np.ascontiguousarray(right_rect[:, ::-1])
+    left_flipped = np.ascontiguousarray(left_rect[:, ::-1])
+    disp_rl = run_foundation_stereo(model, right_flipped, left_flipped, cfg)
+    disp_rl = np.ascontiguousarray(disp_rl[:, ::-1])
+
+    h, w = disp_lr.shape
+    x_coords = np.arange(w, dtype=np.float32)[None, :].repeat(h, axis=0)
+    x_in_right_f = x_coords - disp_lr
+    out_of_bounds = (x_in_right_f < 0) | (x_in_right_f > w - 1)
+    x_in_right = np.clip(x_in_right_f, 0, w - 1).astype(np.int32)
+    rows = np.arange(h)[:, None].repeat(w, axis=1)
+    disp_rl_at_match = disp_rl[rows, x_in_right]
+    consistent = (np.abs(disp_lr - disp_rl_at_match) < threshold) & ~out_of_bounds
+
+    return disp_lr, consistent
+
+
 def build_frame_json(index, T_world_camera, camera_calib, timestamp_ns):
     """Build JSON dict for a single frame.
 
@@ -157,11 +192,12 @@ def build_frame_json(index, T_world_camera, camera_calib, timestamp_ns):
     }
 
 
-def write_to_disk(index, depth_dir, images_dir, rect_image, depth_map):
-    """Write image and depth PNGs.
+def write_to_disk(index, depth_dir, images_dir, rect_image, depth_map, masks_dir=None, mask=None):
+    """Write image and depth PNGs, and optionally a consistency mask.
 
     Image: uint8 grayscale PNG into rectified_images/
     Depth: uint16 PNG in millimeters, clamped to [0, 65535] into depth/
+    Mask: uint8 PNG (255=consistent, 0=inconsistent) into masks/
     """
     img_path = os.path.join(images_dir, f"image_{index:08d}.png")
     Image.fromarray(rect_image.astype(np.uint8)).save(img_path)
@@ -170,6 +206,10 @@ def write_to_disk(index, depth_dir, images_dir, rect_image, depth_map):
     depth_mm = np.clip(depth_mm, 0, 65535).astype(np.uint16)
     depth_path = os.path.join(depth_dir, f"depth_{index:08d}.png")
     Image.fromarray(depth_mm).save(depth_path)
+
+    if masks_dir is not None and mask is not None:
+        mask_path = os.path.join(masks_dir, f"mask_{index:08d}.png")
+        Image.fromarray((mask.astype(np.uint8) * 255)).save(mask_path)
 
 
 def main():
@@ -180,6 +220,11 @@ def main():
     images_dir = os.path.join(args.output_dir, "rectified_images")
     os.makedirs(depth_dir, exist_ok=True)
     os.makedirs(images_dir, exist_ok=True)
+
+    masks_dir = None
+    if args.lr_check:
+        masks_dir = os.path.join(args.output_dir, "masks")
+        os.makedirs(masks_dir, exist_ok=True)
 
     # Load VRS
     print(f"Loading VRS: {args.vrs}")
@@ -313,12 +358,22 @@ def main():
         )
 
         # 9. Foundation Stereo inference
-        disparity_map = run_foundation_stereo(model, left_rect, right_rect, cfg)
+        consistency_mask = None
+        if args.lr_check:
+            disparity_map, consistency_mask = run_lr_consistency(
+                model, left_rect, right_rect, cfg, threshold=args.lr_threshold
+            )
+        else:
+            disparity_map = run_foundation_stereo(model, left_rect, right_rect, cfg)
 
         # 10. Disparity → Depth
         baseline = float(np.linalg.norm(T_leftCam_rightCam.translation()))
         focal_length = float(shared_linear.get_projection_params()[0])  # fx
         depth_map = disparity_to_depth(disparity_map, baseline, focal_length)
+
+        # Zero out inconsistent depth pixels
+        if consistency_mask is not None:
+            depth_map[~consistency_mask] = 0.0
 
         # 11. Compute world pose of rectified camera
         T_world_rectCam = compute_T_world_rectCam(
@@ -333,7 +388,8 @@ def main():
         # 13. Write images (async via thread pool)
         if not args.no_images:
             future = executor.submit(
-                write_to_disk, output_idx, depth_dir, images_dir, left_rect, depth_map
+                write_to_disk, output_idx, depth_dir, images_dir, left_rect, depth_map,
+                masks_dir, consistency_mask
             )
             write_futures.append(future)
 
