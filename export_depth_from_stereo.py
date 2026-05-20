@@ -13,7 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Export depth from stereo using selectable stereo backends."""
+"""Export depth from stereo using Foundation Stereo."""
+
+from __future__ import annotations
 
 import argparse
 import json
@@ -21,60 +23,44 @@ import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
+from typing import TYPE_CHECKING
 
 import numpy as np
-import torch
 from PIL import Image
 
-# Project Aria Tools
-from projectaria_tools.core import data_provider
-from projectaria_tools.core.image import InterpolationMethod
-from projectaria_tools.core.mps import MpsDataPathsProvider, MpsDataProvider
-from projectaria_tools.core.sensor_data import TimeDomain, TimeQueryOptions
+if TYPE_CHECKING:
+    import torch
 
-# Foundation Stereo (git submodule at ./FoundationStereo)
+# Foundation Stereo (git submodule at ./FoundationStereo). Imports stay lazy so
+# --no_images can regenerate only metadata without requiring torch/checkpoints.
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 FOUNDATION_STEREO_PATH = os.path.join(SCRIPT_DIR, "FoundationStereo")
-
-if not os.path.isfile(
-    os.path.join(FOUNDATION_STEREO_PATH, "core", "foundation_stereo.py")
-):
-    raise FileNotFoundError(
-        f"FoundationStereo not found at {FOUNDATION_STEREO_PATH}\n"
-        "Initialize the git submodule:\n"
-        "  git submodule update --init\n"
-        "Or clone manually:\n"
-        "  git clone https://github.com/NVlabs/FoundationStereo.git FoundationStereo"
-    )
-
-sys.path.insert(0, FOUNDATION_STEREO_PATH)
-
-from core.foundation_stereo import FoundationStereo
-from core.utils.utils import InputPadder
-from omegaconf import OmegaConf
-
-# Local utilities
-from stereo_utils import (
-    compute_T_device_rectCam,
-    compute_T_world_rectCam,
-    create_scanline_rectified_cameras,
-    disparity_to_depth,
-    fisheye_to_linear_calib,
-    rectify_stereo_pair,
-)
-from waft_stereo_runner import load_waft_stereo
 
 
 class SingleEngineTrtRunner:
     """TRT runner wrapping a single engine, matching TrtRunner.forward() API."""
 
-    def __init__(self, model_dir: str):
-        import tensorrt as trt
-
-        engine_path = os.path.join(model_dir, "tensorrt.engine")
+    def __init__(self, model_path: str):
+        if os.path.isdir(model_path):
+            engine_path = os.path.join(model_path, "tensorrt.engine")
+        else:
+            engine_path = model_path
         if not os.path.isfile(engine_path):
-            raise FileNotFoundError(f"No tensorrt.engine found in {model_dir}")
+            raise FileNotFoundError(
+                f"No TensorRT engine found at {engine_path}. "
+                "Pass either a .engine file or a directory containing tensorrt.engine."
+            )
 
+        try:
+            import tensorrt as trt
+        except ImportError as e:
+            raise ImportError(
+                "TensorRT backend requires NVIDIA TensorRT Python bindings. "
+                "Install TensorRT separately for your CUDA/driver/runtime before "
+                "using --backend tensorrt."
+            ) from e
+
+        self.engine_path = engine_path
         self._trt_logger = trt.Logger(trt.Logger.WARNING)
         with open(engine_path, "rb") as f:
             self._engine = trt.Runtime(self._trt_logger).deserialize_cuda_engine(
@@ -84,6 +70,7 @@ class SingleEngineTrtRunner:
 
     def _trt_dtype_to_torch(self, dt):
         import tensorrt as trt
+        import torch
 
         mapping = {
             trt.DataType.FLOAT: torch.float32,
@@ -108,6 +95,7 @@ class SingleEngineTrtRunner:
 
     def forward(self, left: torch.Tensor, right: torch.Tensor) -> torch.Tensor:
         import tensorrt as trt
+        import torch
 
         inputs = {"left": left, "right": right}
 
@@ -139,7 +127,7 @@ class SingleEngineTrtRunner:
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Export depth from stereo using Foundation Stereo or WAFT-Stereo"
+        description="Export depth from stereo using Foundation Stereo"
     )
     parser.add_argument("--vrs", required=True, help="Path to VRS file")
     parser.add_argument(
@@ -147,42 +135,14 @@ def parse_args():
     )
     parser.add_argument(
         "--stereo_model",
-        required=True,
-        help="Path to stereo checkpoint (Foundation Stereo .pth / TRT dir, or WAFT-Stereo .pth)",
-    )
-    parser.add_argument(
-        "--stereo_backend",
-        default="foundation",
-        choices=["foundation", "waft"],
-        help="Stereo model family: foundation (default) or waft",
+        default="",
+        help="Path to Foundation Stereo checkpoint (.pth), TensorRT .engine file, or directory containing tensorrt.engine",
     )
     parser.add_argument(
         "--backend",
         default="torch",
         choices=["torch", "tensorrt"],
         help="Inference runtime backend for Foundation Stereo only: 'torch' (default) or 'tensorrt'",
-    )
-    parser.add_argument(
-        "--waft_config",
-        default="",
-        help="Optional WAFT-Stereo config YAML (default: WAFT-Stereo/configs/SynLarge/DAv2L-5.yaml)",
-    )
-    parser.add_argument(
-        "--waft_tile_height",
-        type=int,
-        default=544,
-        help="WAFT tiled inference height (default 544, 0 disables tiling)",
-    )
-    parser.add_argument(
-        "--waft_tile_width",
-        type=int,
-        default=960,
-        help="WAFT tiled inference width (default 960, 0 disables tiling)",
-    )
-    parser.add_argument(
-        "--waft_factor_list",
-        default="1.0",
-        help="Comma-separated WAFT inference scale factors, e.g. '0.5,1.0'",
     )
     parser.add_argument("--output_dir", required=True, help="Output directory")
     parser.add_argument(
@@ -214,18 +174,64 @@ def parse_args():
 
 
 def validate_args(args):
+    if not args.no_images and not args.stereo_model:
+        raise ValueError("--stereo_model is required unless --no_images is set")
+    if args.max_frames < 0:
+        raise ValueError("--max_frames must be >= 0")
+    if args.stride <= 0:
+        raise ValueError("--stride must be > 0")
+    if args.lr_threshold <= 0:
+        raise ValueError("--lr_threshold must be > 0")
     if args.zero_inconsistent_depth and not args.lr_check:
         raise ValueError("--zero_inconsistent_depth requires --lr_check")
-    if args.stereo_backend == "waft":
-        if args.lr_check:
-            raise ValueError(
-                "--lr_check is currently only supported for --stereo_backend foundation"
-            )
-        if args.backend != "torch":
-            print(
-                "WARNING: --backend is ignored for --stereo_backend waft; "
-                "WAFT currently uses its PyTorch inference path."
-            )
+
+
+def load_runtime_dependencies():
+    """Import Project Aria and local stereo helpers after CLI parsing."""
+    global data_provider
+    global InterpolationMethod
+    global MpsDataPathsProvider
+    global MpsDataProvider
+    global TimeDomain
+    global TimeQueryOptions
+    global compute_T_device_rectCam
+    global compute_T_world_rectCam
+    global create_scanline_rectified_cameras
+    global disparity_to_depth
+    global fisheye_to_linear_calib
+    global rectify_stereo_pair
+
+    from projectaria_tools.core import data_provider as _data_provider
+    from projectaria_tools.core.image import InterpolationMethod as _InterpolationMethod
+    from projectaria_tools.core.mps import (
+        MpsDataPathsProvider as _MpsDataPathsProvider,
+        MpsDataProvider as _MpsDataProvider,
+    )
+    from projectaria_tools.core.sensor_data import (
+        TimeDomain as _TimeDomain,
+        TimeQueryOptions as _TimeQueryOptions,
+    )
+    from stereo_utils import (
+        compute_T_device_rectCam as _compute_T_device_rectCam,
+        compute_T_world_rectCam as _compute_T_world_rectCam,
+        create_scanline_rectified_cameras as _create_scanline_rectified_cameras,
+        disparity_to_depth as _disparity_to_depth,
+        fisheye_to_linear_calib as _fisheye_to_linear_calib,
+        rectify_stereo_pair as _rectify_stereo_pair,
+    )
+
+    data_provider = _data_provider
+    InterpolationMethod = _InterpolationMethod
+    MpsDataPathsProvider = _MpsDataPathsProvider
+    MpsDataProvider = _MpsDataProvider
+    TimeDomain = _TimeDomain
+    TimeQueryOptions = _TimeQueryOptions
+    compute_T_device_rectCam = _compute_T_device_rectCam
+    compute_T_world_rectCam = _compute_T_world_rectCam
+    create_scanline_rectified_cameras = _create_scanline_rectified_cameras
+    disparity_to_depth = _disparity_to_depth
+    fisheye_to_linear_calib = _fisheye_to_linear_calib
+    rectify_stereo_pair = _rectify_stereo_pair
 
 
 def load_foundation_stereo(model_path, backend="torch", valid_iters=32):
@@ -235,8 +241,26 @@ def load_foundation_stereo(model_path, backend="torch", valid_iters=32):
     """
     if backend == "tensorrt":
         runner = SingleEngineTrtRunner(model_path)
-        print(f"Foundation Stereo TensorRT engine loaded from {model_path}")
+        print(f"Foundation Stereo TensorRT engine loaded from {runner.engine_path}")
         return runner, None
+
+    import torch
+
+    if not os.path.isfile(
+        os.path.join(FOUNDATION_STEREO_PATH, "core", "foundation_stereo.py")
+    ):
+        raise FileNotFoundError(
+            f"FoundationStereo not found at {FOUNDATION_STEREO_PATH}\n"
+            "Initialize the git submodule:\n"
+            "  git submodule update --init\n"
+            "Or clone manually:\n"
+            "  git clone https://github.com/NVlabs/FoundationStereo.git FoundationStereo"
+        )
+    if FOUNDATION_STEREO_PATH not in sys.path:
+        sys.path.insert(0, FOUNDATION_STEREO_PATH)
+
+    from core.foundation_stereo import FoundationStereo
+    from omegaconf import OmegaConf
 
     cfg_path = os.path.join(os.path.dirname(model_path), "cfg.yaml")
     cfg = OmegaConf.load(cfg_path)
@@ -262,6 +286,8 @@ def run_foundation_stereo(model, left_rect, right_rect, cfg):
     - BCHW format [1, 3, H, W]
     - Padded to multiple of 32 (torch backend only)
     """
+    import torch
+
     left_rgb = np.stack([left_rect] * 3, axis=-1)  # [H, W, 3]
     right_rgb = np.stack([right_rect] * 3, axis=-1)
 
@@ -275,6 +301,8 @@ def run_foundation_stereo(model, left_rect, right_rect, cfg):
         return disp.float().cpu().numpy().squeeze()
 
     # PyTorch backend
+    from core.utils.utils import InputPadder
+
     padder = InputPadder(left_t.shape, divis_by=32, force_square=False)
     left_p, right_p = padder.pad(left_t, right_t)
 
@@ -308,13 +336,6 @@ def run_lr_consistency(model, left_rect, right_rect, cfg, threshold=1.0):
     consistent = (np.abs(disp_lr - disp_rl_at_match) < threshold) & ~out_of_bounds
 
     return disp_lr, consistent
-
-
-def parse_waft_factor_list(spec: str) -> tuple[float, ...]:
-    values = tuple(float(v.strip()) for v in spec.split(",") if v.strip())
-    if not values:
-        raise ValueError("WAFT factor list must not be empty")
-    return values
 
 
 def transform_to_json(transform):
@@ -377,15 +398,17 @@ def write_to_disk(
 def main():
     args = parse_args()
     validate_args(args)
+    load_runtime_dependencies()
 
     os.makedirs(args.output_dir, exist_ok=True)
     depth_dir = os.path.join(args.output_dir, "depth")
     images_dir = os.path.join(args.output_dir, "rectified_images")
-    os.makedirs(depth_dir, exist_ok=True)
-    os.makedirs(images_dir, exist_ok=True)
+    if not args.no_images:
+        os.makedirs(depth_dir, exist_ok=True)
+        os.makedirs(images_dir, exist_ok=True)
 
     masks_dir = None
-    if args.lr_check:
+    if args.lr_check and not args.no_images:
         masks_dir = os.path.join(args.output_dir, "masks")
         os.makedirs(masks_dir, exist_ok=True)
 
@@ -423,29 +446,25 @@ def main():
     )
     assert first_online_calib is not None, "No online calibration data found"
 
-    # Load stereo model
-    if args.stereo_backend == "foundation":
+    # Load stereo model only when depth/images are being regenerated.
+    if args.no_images:
+        print("Metadata-only mode (--no_images): skipping stereo model/inference")
+        model = None
+        cfg = None
+    else:
         print(f"Loading Foundation Stereo: {args.stereo_model}")
         model, cfg = load_foundation_stereo(args.stereo_model, backend=args.backend)
-    else:
-        waft_crop_size = None
-        if args.waft_tile_height > 0 and args.waft_tile_width > 0:
-            waft_crop_size = (args.waft_tile_height, args.waft_tile_width)
-        waft_factor_list = parse_waft_factor_list(args.waft_factor_list)
-        waft_config = args.waft_config or None
-        print(f"Loading WAFT-Stereo: {args.stereo_model}")
-        model = load_waft_stereo(
-            checkpoint_path=args.stereo_model,
-            config_file=waft_config,
-            crop_size=waft_crop_size,
-            factor_list=waft_factor_list,
-        )
-        cfg = None
 
     # Process frames
-    max_output = args.max_frames if args.max_frames > 0 else num_frames
+    available_outputs = (num_frames + args.stride - 1) // args.stride
+    max_output = (
+        min(args.max_frames, available_outputs)
+        if args.max_frames > 0
+        else available_outputs
+    )
     print(
-        f"\nProcessing up to {max_output} output frames from {num_frames} VRS frames..."
+        f"\nProcessing up to {max_output} output frames from {num_frames} "
+        f"VRS frames (stride {args.stride})..."
     )
 
     json_frames = []
@@ -458,14 +477,20 @@ def main():
         if output_idx >= max_output:
             break
 
-        # 1. Load images (right image looked up by left timestamp for robustness)
+        # 1. Load timestamps/images (right frame looked up by left timestamp for
+        # robustness). In metadata-only mode we avoid converting image payloads
+        # to numpy and skip all stereo inference.
         left_data, left_record = vrs.get_image_data_by_index(left_stream, i)
         timestamp_ns = left_record.capture_timestamp_ns
         right_data, right_record = vrs.get_image_data_by_time_ns(
             right_stream, timestamp_ns, TimeDomain.DEVICE_TIME, TimeQueryOptions.CLOSEST
         )
-        left_image = left_data.to_numpy_array()
-        right_image = right_data.to_numpy_array()
+        if args.no_images:
+            left_image = None
+            right_image = None
+        else:
+            left_image = left_data.to_numpy_array()
+            right_image = right_data.to_numpy_array()
 
         # Stereo pairs should have nearly identical timestamps; allow up to 1ms
         timestamp_diff_ns = abs(
@@ -505,7 +530,10 @@ def main():
         T_leftCam_rightCam = T_leftCam_device @ T_rightCam_device.inverse()
 
         # 5. Get image dimensions
-        img_h, img_w = left_image.shape[:2]
+        if args.no_images:
+            img_w, img_h = [int(v) for v in left_calib.get_image_size()]
+        else:
+            img_h, img_w = left_image.shape[:2]
 
         # 6. Create shared rectified pinhole camera from left camera only.
         # Both images must use the same intrinsics for correct stereo rectification.
@@ -522,39 +550,37 @@ def main():
             T_leftCam_device, T_rightCam_device
         )
 
-        # 8. Rectify
-        left_rect, right_rect = rectify_stereo_pair(
-            left_image,
-            right_image,
-            left_calib,
-            right_calib,
-            shared_linear,
-            shared_linear,
-            R_left_rect,
-            R_right_rect,
-            interpolation=InterpolationMethod.BILINEAR,
-        )
-
-        # 9. Stereo inference
         consistency_mask = None
-        if args.lr_check:
-            disparity_map, consistency_mask = run_lr_consistency(
-                model, left_rect, right_rect, cfg, threshold=args.lr_threshold
+        if not args.no_images:
+            # 8. Rectify
+            left_rect, right_rect = rectify_stereo_pair(
+                left_image,
+                right_image,
+                left_calib,
+                right_calib,
+                shared_linear,
+                shared_linear,
+                R_left_rect,
+                R_right_rect,
+                interpolation=InterpolationMethod.BILINEAR,
             )
-        else:
-            if args.stereo_backend == "foundation":
-                disparity_map = run_foundation_stereo(model, left_rect, right_rect, cfg)
+
+            # 9. Stereo inference
+            if args.lr_check:
+                disparity_map, consistency_mask = run_lr_consistency(
+                    model, left_rect, right_rect, cfg, threshold=args.lr_threshold
+                )
             else:
-                disparity_map = model.run(left_rect, right_rect)
+                disparity_map = run_foundation_stereo(model, left_rect, right_rect, cfg)
 
-        # 10. Disparity → Depth
-        baseline = float(np.linalg.norm(T_leftCam_rightCam.translation()))
-        focal_length = float(shared_linear.get_projection_params()[0])  # fx
-        depth_map = disparity_to_depth(disparity_map, baseline, focal_length)
+            # 10. Disparity → Depth
+            baseline = float(np.linalg.norm(T_leftCam_rightCam.translation()))
+            focal_length = float(shared_linear.get_projection_params()[0])  # fx
+            depth_map = disparity_to_depth(disparity_map, baseline, focal_length)
 
-        # Optionally zero out inconsistent depth pixels before writing.
-        if consistency_mask is not None and args.zero_inconsistent_depth:
-            depth_map[~consistency_mask] = 0.0
+            # Optionally zero out inconsistent depth pixels before writing.
+            if consistency_mask is not None and args.zero_inconsistent_depth:
+                depth_map[~consistency_mask] = 0.0
 
         # 11. Compute poses of the rectified camera
         T_world_rectCam = compute_T_world_rectCam(

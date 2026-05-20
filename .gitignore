@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local environments
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Local editor and assistant state
+.vscode/
+.idea/
+.claude/
+
+# Generated exports and reports
+output/
+
+# Local datasets and downloaded samples
+data/
+datasets/
+vrs_sample_data/
+*.vrs
+*.zip
+
+# Local model artifacts
+*.pth
+*.pt
+*.engine
+*.onnx
+*.plan
+ckpts/
+FoundationStereo/ckpts/
