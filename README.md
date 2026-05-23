@@ -1,6 +1,6 @@
 # Aria Gen2 Stereo Depth Estimation Tutorial
 
-Complete tutorial for computing metric depth maps from Aria Gen2 stereo cameras using stereo rectification and Foundation Stereo neural network.
+Complete tutorial for computing metric depth maps from Aria Gen2 stereo cameras using stereo rectification and Foundation Stereo.
 
 ## Overview
 
@@ -52,7 +52,7 @@ This installs:
 - Python 3.11
 - PyTorch 2.10.0 with CUDA 12.8 support
 - Project Aria Tools 2.1.0 with all extras
-- Foundation Stereo dependencies (timm, einops, xformers, flash-attn, etc.)
+- Foundation Stereo dependencies (timm, einops, xformers, etc.)
 - Rerun SDK for 3D visualization
 
 ### 4. Run the Export Script
@@ -73,11 +73,19 @@ Optional flags:
 - `--max_frames N` — Limit to N output frames (0 = all)
 - `--stride N` — Process every Nth VRS frame (default 1)
 - `--no_images` — Skip writing PNG images, only produce `pinhole_camera_parameters.json`
+- `--backend {torch,tensorrt}` — Foundation Stereo runtime backend only. With `tensorrt`, pass either `--stereo_model /path/to/tensorrt.engine` or a directory containing `tensorrt.engine`.
+- `--lr_check` — Run Foundation Stereo left-right consistency checking and write `masks/mask_XXXXXXXX.png`
+- `--zero_inconsistent_depth` — With `--lr_check`, zero inconsistent depth pixels before writing `depth/*.png`
+
+Notes:
+- `--zero_inconsistent_depth` requires `--lr_check`
+- `--backend tensorrt` applies only to Foundation Stereo and requires NVIDIA TensorRT Python bindings installed separately from the base environment
 
 The output directory will contain:
 - `rectified_images/image_XXXXXXXX.png` — Rectified left camera images (uint8 grayscale)
 - `depth/depth_XXXXXXXX.png` — Depth maps as uint16 PNGs in millimeters
-- `pinhole_camera_parameters.json` — Per-frame camera intrinsics and world poses
+- `masks/mask_XXXXXXXX.png` — Optional LR-consistency masks (255 = consistent, 0 = inconsistent)
+- `pinhole_camera_parameters.json` — Per-frame camera intrinsics, `T_world_camera`, and `T_device_rectCam`
 
 ### 5. Run the Tutorial Notebook
 
@@ -90,7 +98,7 @@ The tutorial covers:
 1. **Environment Setup** - Import libraries and verify GPU
 2. **VRS Data Loading** - Load stereo cameras and calibration
 3. **Stereo Rectification** - Transform fisheye to pinhole with horizontal epipolar lines
-4. **Foundation Stereo Inference** - Compute disparity map
+4. **Stereo Inference** - Compute disparity map with Foundation Stereo
 5. **Depth Conversion** - Convert disparity to metric depth
 6. **3D Visualization** - Interactive point cloud with Rerun
 
@@ -120,7 +128,7 @@ FRAME_INDEX = 100
 ## Performance
 
 For faster inference:
-- Use TensorRT for 3-6x speedup
+- Use TensorRT for 3-6x speedup. TensorRT is optional and host-specific, so it is not installed by `environment.yml`; install NVIDIA TensorRT Python bindings that match your CUDA/driver/runtime before using `--backend tensorrt`.
 - Reduce image resolution
 - Reduce refinement iterations (quality tradeoff)
 

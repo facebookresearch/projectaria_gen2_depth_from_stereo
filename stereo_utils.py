@@ -23,6 +23,7 @@ Key functions:
 - fisheye_to_linear_calib: Convert fisheye to linear camera model
 - rectify_stereo_pair: Apply rectification to image pair
 - compute_stereo_baseline: Get baseline distance between cameras
+- compute_T_device_rectCam: Get rectified camera pose in the device frame
 - disparity_to_depth: Convert disparity map to depth map
 """
 
@@ -257,3 +258,23 @@ def compute_T_world_rectCam(
 
     T_world_rectCam = T_world_cam @ T_left_rect
     return T_world_rectCam
+
+
+def compute_T_device_rectCam(T_leftCam_device: SE3, R_left_rect: SO3) -> SE3:
+    """
+    Compute the pose of the rectified left camera in the device frame.
+
+    Args:
+        T_leftCam_device: Transform from device frame to left camera frame
+        R_left_rect: Rotation mapping points from rectified frame to original
+            left camera frame
+
+    Returns:
+        SE3 pose of the rectified camera in device frame
+    """
+    quat = R_left_rect.to_quat()[0]  # [w, x, y, z]
+    T_left_rect = SE3.from_quat_and_translation(
+        quat[0], quat[1:4], np.array([0.0, 0.0, 0.0])
+    )
+
+    return T_leftCam_device.inverse() @ T_left_rect
