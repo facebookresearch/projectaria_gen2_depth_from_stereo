@@ -384,8 +384,7 @@ def write_to_disk(
     img_path = os.path.join(images_dir, f"image_{index:08d}.png")
     Image.fromarray(rect_image.astype(np.uint8)).save(img_path)
 
-    depth_map = np.nan_to_num(depth_map, nan=0.0, posinf=0.0, neginf=0.0)
-    depth_mm = (depth_map * 1000).astype(np.int32)
+    depth_mm = np.nan_to_num(depth_map * 1000.0, nan=0.0, posinf=0.0, neginf=0.0)
     depth_mm = np.clip(depth_mm, 0, 65535).astype(np.uint16)
     depth_path = os.path.join(depth_dir, f"depth_{index:08d}.png")
     Image.fromarray(depth_mm).save(depth_path)
